@@ -202,7 +202,15 @@ function nextFreeSlot() { for (let s = 1; s <= MAXV; s++) if (!activeSlots().inc
 function persistSlots() { try { store.setSettings({ activeSlots: activeSlots() }); } catch {} }
 function charNameOf(slot) { const g = games.find((x) => x.slot === slot); return (g && g.state && g.state.charName) || null; }
 // rótulo da conta: nome que o Antônio deu > nick do char (da REST) > "Conta N"
-function getName(slot) { const n = (store.getSettings().accountNames || {})[String(slot)]; return n || charNameOf(slot) || `Conta ${slot}`; }
+function realName(slot) { const n = (store.getSettings().accountNames || {})[String(slot)]; return n || charNameOf(slot) || null; }
+function getName(slot) { return realName(slot) || `Conta ${slot}`; }
+// grava o evento com o nome REAL da conta se já conhecido; o fallback "Conta N" nunca vai pro disco,
+// só pra UI — assim o histórico ganha o nick retroativamente quando ele carregar
+function appendEv(slot, obj) {
+  const n = realName(slot);
+  const ev = store.appendEvent(Object.assign({ account: `acc${slot}` }, n ? { accountName: n } : {}, obj));
+  return ev.accountName ? ev : Object.assign({ accountName: getName(slot) }, ev);
+}
 
 // ---------------- layout ----------------
 const GAP = 3;   // divisória fininha entre as telas
@@ -451,19 +459,17 @@ function handleMessage(g, msg) {
       const rec = { ts: Date.now(), name: c.name, dex, iv: c.iv, quality: c.quality, rarity: c.rarity, shiny: !!c.shiny };
       g.recent.push(rec); if (g.recent.length > 100) g.recent.shift();
       const kind = c.shiny ? 'shiny_capture' : (isRare(c, st) ? 'rare_capture' : 'capture');
-      const ev = store.appendEvent({ account: `acc${g.slot}`, type: kind, name: c.name, dex, iv: c.iv, ivMax: 192, quality: c.quality, rarity: c.rarity, ball: c.ball, shiny: !!c.shiny });
-      const ui = Object.assign({ accountName: getName(g.slot) }, ev);
+      const ev = appendEv(g.slot, { type: kind, name: c.name, dex, iv: c.iv, ivMax: 192, quality: c.quality, rarity: c.rarity, ball: c.ball, shiny: !!c.shiny });
+      const ui = ev;
       pushEvent(ui);
       if (kind !== 'capture') { alertUI(ui); if (kind === 'shiny_capture' && st.screenshotOnShiny) shoot(g, ev); }
     } else if (e.type === 'shiny_wild') {
-      const ev = store.appendEvent({ account: `acc${g.slot}`, type: 'shiny_wild', name: e.cap.name, dex: resolveDex(e.cap.speciesId, e.cap.name) });
-      const ui = Object.assign({ accountName: getName(g.slot) }, ev);
-      pushEvent(ui); alertUI(ui);
+      const ev = appendEv(g.slot, { type: 'shiny_wild', name: e.cap.name, dex: resolveDex(e.cap.speciesId, e.cap.name) });
+      pushEvent(ev); alertUI(ev);
     } else if (e.type === 'shiny_global') {
       if (dedupeGlobal(e.global)) {
-        const ev = store.appendEvent({ account: `acc${g.slot}`, type: 'shiny_global', player: e.global.player, name: e.global.name, dex: e.global.dexId, tier: e.global.tier });
-        const ui = Object.assign({ accountName: getName(g.slot) }, ev);
-        pushEvent(ui); alertUI(ui);
+        const ev = appendEv(g.slot, { type: 'shiny_global', player: e.global.player, name: e.global.name, dex: e.global.dexId, tier: e.global.tier });
+        pushEvent(ev); alertUI(ev);
         // (a pedido: SEM print no shiny global — só no MEU shiny)
       }
     } else if (e.type === 'hunt-reset') {
@@ -480,9 +486,8 @@ function handleMessage(g, msg) {
 
 // ---------------- alertas (balls/potions acabando, morte, desconexão) ----------------
 function fireAlert(g, type, extra) {
-  const ev = store.appendEvent(Object.assign({ account: `acc${g.slot}`, type }, extra || {}));
-  const ui = Object.assign({ accountName: getName(g.slot) }, ev);
-  pushEvent(ui); alertUI(ui);
+  const ev = appendEv(g.slot, Object.assign({ type }, extra || {}));
+  pushEvent(ev); alertUI(ev);
 }
 // total de bolas ÚTEIS (ignora Master id 5, que é rara/limitada e não conta pra "acabando")
 function ballsTotalUsable(s) { if (!s.balls) return null; let t = 0; for (const [id, q] of Object.entries(s.balls)) { if (String(id) === '5') continue; t += q || 0; } return t; }
@@ -611,7 +616,7 @@ function shoot(g, ev) {
   if (!wc || wc.isDestroyed()) return;
   wc.capturePage().then((img) => {
     const p = store.saveShot(`acc${g.slot}`, img.toPNG());
-    if (p) pushEvent(Object.assign({ accountName: getName(g.slot) }, store.appendEvent({ account: `acc${g.slot}`, type: 'shot', shot: p, of: ev.type, name: ev.name || null })));
+    if (p) pushEvent(appendEv(g.slot, { type: 'shot', shot: p, of: ev.type, name: ev.name || null }));
   }).catch(() => {});
 }
 
@@ -705,7 +710,7 @@ ipcMain.handle('refreshServer', async (_e, slot) => {
   await Promise.all(list.map((g) => pollServer(g).catch(() => {})));
   return true;
 });
-ipcMain.handle('getEvents', () => store.readEvents(5000).map((e) => Object.assign({ accountName: getName((e.account || '').replace('acc', '')) }, e)));
+ipcMain.handle('getEvents', () => store.readEvents(5000).map((e) => e.accountName ? e : Object.assign({ accountName: getName(Number((e.account || '').replace('acc', ''))) }, e)));
 ipcMain.handle('getCreatures', () => creatures);
 ipcMain.handle('toggleOverlay', () => toggleOverlay());
 ipcMain.handle('winMinimize', () => { if (win) win.minimize(); });
